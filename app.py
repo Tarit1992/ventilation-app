@@ -3,57 +3,31 @@ import math
 
 st.set_page_config(page_title="Farm Ventilation PRO", layout="centered")
 
-st.title("🐷🐔 Farm Ventilation Calculator (BESS Version)")
+st.title("🐷🐔 Farm Ventilation Calculator (CFM + BESS)")
 
 # ----------------------
-# SECTION 1: HOUSE
+# SECTION 1: INPUT
 # ----------------------
 st.header("1️⃣ ข้อมูลโรงเรือน")
 
-width = st.number_input("ความกว้างโรงเรือน (m)", value=12.0)
-height = st.number_input("ความสูงโรงเรือน (m)", value=3.0)
+width_m = st.number_input("ความกว้าง (m)", value=18.0)
+height_m = st.number_input("ความสูง (m)", value=3.0)
+air_speed_fpm = st.number_input("Air Speed (ft/min)", value=800.0)
 
 # ----------------------
-# SECTION 2: AIR SPEED
+# SECTION 2: FAN
 # ----------------------
-st.header("2️⃣ ความเร็วลม")
+st.header("2️⃣ พัดลม (BESS)")
 
-unit = st.selectbox("หน่วยความเร็วลม", ["m/s", "ft/min"])
-
-air_speed_input = st.number_input("ความเร็วลม", value=2.5)
-
-# convert unit
-if unit == "ft/min":
-    air_speed = air_speed_input / 196.85
-else:
-    air_speed = air_speed_input
-
-# show conversion
-st.caption(f"≈ {air_speed:.2f} m/s | {air_speed * 196.85:.0f} ft/min")
+fan_cfm = st.number_input("กำลังพัดลม (CFM จาก BESS)", value=25000.0)
 
 # ----------------------
-# SECTION 3: COOLING PAD (INPUT ก่อนคำนวณ)
+# SECTION 3: COOLING PAD
 # ----------------------
 st.header("3️⃣ Cooling Pad")
 
 pad_height = st.selectbox("ความสูง Pad (m)", [1.5, 1.8, 2.0, 2.4])
-pad_width = st.selectbox("ความกว้างต่อก้อน (m)", [0.6, 0.3])
-
-# ----------------------
-# SECTION 4: FAN (BESS)
-# ----------------------
-st.header("4️⃣ พัดลม (อ้างอิง BESS Lab)")
-
-fan_capacity = st.number_input(
-    "กำลังพัดลม (m³/hr จาก BESS)", value=38000.0
-)
-
-# ----------------------
-# SECTION 5: PUMP
-# ----------------------
-st.header("5️⃣ Pump")
-
-water_rate = st.selectbox("Water Rate (L/min/m²)", [6, 7, 8, 9, 10])
+pad_width = st.selectbox("ความกว้าง Pad (m)", [0.6, 0.3])
 
 # ----------------------
 # CALCULATION
@@ -63,46 +37,60 @@ if st.button("คำนวณทั้งหมด"):
     st.header("📊 ผลลัพธ์")
 
     # ----------------------
-    # AIRFLOW
+    # CFM (สูตรคุณ)
     # ----------------------
-    area = width * height
-    airflow = area * air_speed * 3600
+    width_ft = width_m * 3.28084
+    height_ft = height_m * 3.28084
+    area_ft2 = width_ft * height_ft
+
+    cfm = area_ft2 * air_speed_fpm
+    m3hr = cfm * 1.699
+
+    st.subheader("🌬️ ระบบลม")
+    st.write(f"พื้นที่หน้าตัด: {area_ft2:,.0f} ft²")
+    st.write(f"Airflow: {cfm:,.0f} CFM")
+    st.write(f"Airflow: {m3hr:,.0f} m³/hr")
 
     # ----------------------
     # FAN
     # ----------------------
-    num_fans = math.ceil(airflow / fan_capacity)
+    num_fans = math.ceil(cfm / fan_cfm)
+    st.write(f"จำนวนพัดลม: {num_fans} ตัว")
 
     # ----------------------
-    # COOLING PAD AREA
+    # COOLING PAD
     # ----------------------
-    pad_area = airflow / 10000
+    st.subheader("🧊 Cooling Pad")
+
+    pad_area = m3hr / 10000  # m²
 
     pad_per_piece = pad_height * pad_width
     num_pads = math.ceil(pad_area / pad_per_piece)
     total_length = num_pads * pad_width
 
-    # ----------------------
-    # PUMP
-    # ----------------------
-    pump_lpm = pad_area * water_rate
-    pump_m3hr = (pump_lpm * 60) / 1000
-    pump_safe = pump_m3hr * 1.2
-
-    # ----------------------
-    # OUTPUT
-    # ----------------------
-    st.subheader("🌬️ ระบบลม")
-    st.write(f"Airflow: {airflow:,.0f} m³/hr")
-    st.write(f"จำนวนพัดลม: {num_fans} ตัว")
-
-    st.subheader("🧊 Cooling Pad")
     st.write(f"พื้นที่ Pad: {pad_area:.2f} m²")
     st.write(f"พื้นที่ต่อก้อน: {pad_per_piece:.2f} m²")
     st.write(f"จำนวนก้อน: {num_pads} ก้อน")
     st.write(f"ความยาวรวม: {total_length:.2f} m")
 
+    # ----------------------
+    # PUMP (ตามที่คุณกำหนด)
+    # ----------------------
     st.subheader("💧 Pump")
-    st.write(f"Flow: {pump_lpm:,.0f} L/min")
-    st.write(f"Pump Size: {pump_m3hr:.2f} m³/hr")
-    st.write(f"Pump (เผื่อ 20%): {pump_safe:.2f} m³/hr")
+
+    # 기준: 1 แผ่น (1.8 x 0.6) ใช้ 7 L/min
+    base_pad_area = 1.8 * 0.6  # 1.08 m²
+    base_flow = 7  # L/min
+
+    # หา L/min ต่อ m²
+    flow_per_m2 = base_flow / base_pad_area
+
+    # คำนวณปั๊มจากพื้นที่จริง
+    pump_lpm = pad_area * flow_per_m2
+
+    # เผื่อ 20%
+    pump_lpm_safe = pump_lpm * 1.2
+
+    st.write(f"อัตราน้ำต่อ m²: {flow_per_m2:.2f} L/min/m²")
+    st.write(f"Flow ปั๊ม: {pump_lpm:,.0f} L/min")
+    st.write(f"Pump (เผื่อ 20%): {pump_lpm_safe:,.0f} L/min")
