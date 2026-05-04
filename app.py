@@ -12,7 +12,19 @@ st.header("1️⃣ ข้อมูลโรงเรือน")
 
 width_m = st.number_input("ความกว้าง (m)", value=18.0)
 height_m = st.number_input("ความสูง (m)", value=3.0)
+house_length = st.number_input("ความยาวโรงเรือน (m)", value=100.0)
+
 air_speed_fpm = st.number_input("Air Speed (ft/min)", value=800.0)
+
+# ----------------------
+# STATIC PRESSURE
+# ----------------------
+st.header("📉 Static Pressure")
+
+design_pressure = st.selectbox(
+    "เลือกแรงดัน (in.w.g.)",
+    [0.15, 0.20, 0.25, 0.30]
+)
 
 # ----------------------
 # FAN
@@ -56,17 +68,21 @@ if st.button("คำนวณทั้งหมด"):
     m3hr = required_cfm * 1.699
 
     st.subheader("🌬️ ความต้องการลม")
+    st.write(f"พื้นที่หน้าตัด: {area_ft2:,.0f} ft²")
     st.write(f"ต้องการลม: {required_cfm:,.0f} CFM")
+    st.write(f"≈ {m3hr:,.0f} m³/hr")
 
     # ----------------------
     # FAN
     # ----------------------
     num_fans = math.ceil(required_cfm / fan_cfm)
     total_fan_cfm = num_fans * fan_cfm
+    extra = total_fan_cfm - required_cfm
 
     st.subheader("🌀 พัดลม")
     st.write(f"จำนวนพัดลม: {num_fans} ตัว")
     st.write(f"ลมรวมจากพัดลม: {total_fan_cfm:,.0f} CFM")
+    st.write(f"ส่วนเกิน/ขาด: {extra:,.0f} CFM")
 
     if total_fan_cfm >= required_cfm:
         st.success("✔ พัดลมเพียงพอ")
@@ -74,39 +90,60 @@ if st.button("คำนวณทั้งหมด"):
         st.error("❌ พัดลมไม่พอ")
 
     # ----------------------
+    # PRESSURE CHECK
+    # ----------------------
+    st.subheader("📉 ตรวจสอบแรงดัน")
+
+    velocity_pressure = (air_speed_fpm / 4005) ** 2
+    estimated_static = velocity_pressure + 0.08
+
+    st.write(f"Velocity Pressure: {velocity_pressure:.3f} in.w.g.")
+    st.write(f"Estimated Static: {estimated_static:.3f} in.w.g.")
+    st.write(f"Design Pressure: {design_pressure:.2f} in.w.g.")
+
+    diff = estimated_static - design_pressure
+
+    if abs(diff) < 0.03:
+        st.success("✔ แรงดันเหมาะสม")
+    elif diff < 0:
+        st.warning("⚠️ แรงดันต่ำไป")
+    else:
+        st.error("❌ แรงดันสูงไป")
+
+    # ----------------------
     # PAD AREA
     # ----------------------
     pad_area = m3hr / 10000
+    total_pad_length = pad_area / pad_height
 
     st.subheader("🧊 Cooling Pad")
-
-    st.write(f"พื้นที่ Pad ที่ต้องใช้: {pad_area:.2f} m²")
-
-    # ความยาว pad รวม
-    total_pad_length = pad_area / pad_height
+    st.write(f"พื้นที่ Pad: {pad_area:.2f} m²")
+    st.write(f"ความยาว Pad รวม: {total_pad_length:.2f} m")
 
     # ----------------------
     # LAYOUT
     # ----------------------
     if layout == "2 ด้าน (ซ้าย-ขวา)":
         side_length = total_pad_length / 2
-        front_length = 0
 
-        st.write(f"ความยาว Pad ต่อด้าน (ซ้าย/ขวา): {side_length:.2f} m")
+        if side_length > house_length:
+            st.warning("⚠️ Pad ยาวเกินโรงเรือน")
 
         side_lengths = [side_length, side_length]
+
+        st.write(f"ซ้าย/ขวา: {side_length:.2f} m")
 
     else:
         remaining = total_pad_length - front_length
 
         if remaining < 0:
             st.error("❌ ความยาวด้านหน้ามากเกินไป")
-            remaining = 0
+            st.stop()
 
         side_length = remaining / 2
 
         st.write(f"ด้านหน้า: {front_length:.2f} m")
-        st.write(f"ซ้าย/ขวา: {side_length:.2f} m ต่อด้าน")
+        st.write(f"ซ้าย/ขวา: {side_length:.2f} m")
 
         side_lengths = [side_length, side_length, front_length]
 
@@ -116,14 +153,13 @@ if st.button("คำนวณทั้งหมด"):
     pad_per_piece = pad_height * pad_width
     num_pads = math.ceil(pad_area / pad_per_piece)
 
-    st.write(f"จำนวนก้อนทั้งหมด: {num_pads} ก้อน")
+    st.write(f"จำนวนก้อน Pad: {num_pads} ก้อน")
 
     # ----------------------
     # PUMP
     # ----------------------
     st.subheader("💧 Pump")
 
-    # 기준: 1.8x0.6 = 7 L/min
     base_area = 1.8 * 0.6
     flow_per_m2 = 7 / base_area
 
@@ -138,4 +174,7 @@ if st.button("คำนวณทั้งหมด"):
 
         st.write(f"ด้านที่ {i+1}: {flow_safe:,.0f} L/min")
 
-    st.write(f"จำนวนปั๊มทั้งหมด: {len(pumps)} ตัว")
+    total_pump = sum(pumps)
+
+    st.write(f"จำนวนปั๊ม: {len(pumps)} ตัว")
+    st.write(f"ปั๊มรวมทั้งหมด: {total_pump:,.0f} L/min")
