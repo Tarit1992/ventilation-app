@@ -431,151 +431,209 @@ with tab_summary:
                   f'Air inlet fraction: {inlet_percent:g}%; conversion: {conversion:g}; inlet capacity: {inlet_capacity:g} m3/h',
                   'Preliminary calculations only. Verify actual product curves, pressure losses, ventilation, and heat loss.'])
     # Exports reproduce the same four sections and tables shown on the Summary tab.
+    # English-only exports avoid server-side Thai font dependencies.
     house_rows = [
-        ("ความกว้างโรงเรือน (m)", f"{width_m:,.2f}"),
-        ("ความยาวโรงเรือน (m)", f"{house_length:,.2f}"),
-        ("ความสูงโรงเรือน (m)", f"{height_m:,.2f}"),
-        ("ปริมาตร (m³)", f"{sum_volume:,.2f}"),
-        ("Air Speed (ft/min)", f"{air_speed_fpm:,.0f}"),
-        ("Design Static Pressure (in.w.g.)", f"{design_pressure:.2f}"),
+        ("House width (m)", f"{width_m:,.2f}"),
+        ("House length (m)", f"{house_length:,.2f}"),
+        ("House height (m)", f"{height_m:,.2f}"),
+        ("House volume (m3)", f"{sum_volume:,.2f}"),
+        ("Air speed (ft/min)", f"{air_speed_fpm:,.0f}"),
+        ("Design static pressure (in.w.g.)", f"{design_pressure:.2f}"),
     ]
+    export_equipment = [
+        ["Ventilation Fan", sum_fans, "units", f"{fan_cfm:,.0f} CFM/unit; installed {sum_fan_cfm:,.0f} CFM"],
+        ["Cooling Pad", sum_pad_pieces, "pieces", f"{pad_height:g} x {pad_width:g} m; installed area {pad_design['actual_area_m2']:,.2f} m2"],
+        ["Water Pump (estimated)", len(sum_pump_flow), "units", f"Total design flow {sum(flow for _, flow in sum_pump_flow):,.1f} L/min"],
+        ["L.B. White Heater", heater_count, "units", f"{heater_kw:g} kW/unit; installed {installed_kw:,.1f} kW"],
+        ["Air Inlet", sum_inlets, "units", f"{inlet_capacity:,.0f} m3/h/unit; airflow share {inlet_percent:g}%"],
+        ["Air Step / Tunnel Door", len(sum_pad_sides), "sides", f"{sum_step['layers']} layers; external height {sum_opening_height:.3f} m; total length {sum_pad_length:.2f} m" if sum_step else "No suitable layer model"],
+    ]
+    export_detail = []
+    for (side, length), (_, flow) in zip(sum_pad_sides, sum_pump_flow):
+        side_label = {"ด้านหน้า":"Front", "ด้านซ้าย":"Left", "ด้านขวา":"Right", "ซ้าย":"Left", "ขวา":"Right"}.get(side, side)
+        export_detail.append([
+            side_label, round(length / pad_width), round(length, 2), pad_height,
+            round(flow, 1), sum_step['layers'] if sum_step else "N/A",
+            round(sum_opening_height, 3),
+            round(sum_step['installation_mm']/1000, 3) if sum_step else "N/A",
+            round(sum_step['opening_mm']/1000, 3) if sum_step else "N/A",
+            round(length * sum_opening_height, 2),
+        ])
+    export_detail_headers = ["Side", "Pad pcs", "Pad length (m)", "Pad height (m)",
+                             "Pump (L/min)", "Air Step layers", "External height (m)",
+                             "Install height (m)", "Opening height (m)", "Opening area (m2)"]
     calc_rows = [
-        ("Ventilation Required", f"{sum_required_cfm:,.0f} CFM / {sum_required_m3h:,.0f} m³/h"),
-        ("Cooling Pad", f"{sum_fan_cfm:,.0f} CFM / {pad_face_velocity:g} / 10.764 = {sum_pad_area:,.2f} m²; {sum_pad_pieces} ก้อน; ยาว {sum_pad_length:,.2f} m"),
-        ("Heater", f"{climate}; {factor:.3f} kW/m³; {required_kw:,.1f} kW; margin {safety_margin:g}%"),
-        ("Air Inlet", f"{sum_fan_cfm:,.0f} CFM × {inlet_percent:g}% × {conversion:g} = {sum_inlet_m3h:,.0f} m³/h"),
-        ("Air Step / Tunnel Door", f"{sum_step['layers']} Layers; สูงภายนอก {sum_opening_height:.3f} m; สูงเป้าหมาย {pad_height*opening_ratio/100:.3f} m" if sum_step else "ไม่มีรุ่นที่เหมาะสม"),
+        ("Ventilation Required", f"{sum_required_cfm:,.0f} CFM / {sum_required_m3h:,.0f} m3/h"),
+        ("Cooling Pad", f"{sum_fan_cfm:,.0f} CFM / {pad_face_velocity:g} / 10.764 = {sum_pad_area:,.2f} m2; {sum_pad_pieces} pieces; total length {sum_pad_length:,.2f} m"),
+        ("Heater", f"{climate}; factor {factor:.3f} kW/m3; required {required_kw:,.1f} kW; margin {safety_margin:g}%"),
+        ("Air Inlet", f"{sum_fan_cfm:,.0f} CFM x {inlet_percent:g}% x {conversion:g} = {sum_inlet_m3h:,.0f} m3/h"),
+        ("Air Step / Tunnel Door", f"{sum_step['layers']} layers; external height {sum_opening_height:.3f} m; target {pad_height*opening_ratio/100:.3f} m" if sum_step else "No suitable model"),
     ]
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Table as PdfTable, TableStyle, Spacer, KeepTogether
-    from reportlab.lib import colors
-    from reportlab.lib.styles import ParagraphStyle
-    from reportlab.pdfbase import pdfmetrics
-    from reportlab.pdfbase.ttfonts import TTFont
-    from reportlab.lib.enums import TA_LEFT
+    from PIL import Image, ImageDraw, ImageFont
     from openpyxl import Workbook
-    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-    from io import BytesIO
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
 
-    @st.cache_resource
-    def summary_font():
-        font_path = "/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf"
-        pdfmetrics.registerFont(TTFont("KSPThai", font_path))
-        return "KSPThai"
+    def export_font(size):
+        # Pillow ships DejaVu Sans in most environments; fallback is always available.
+        try:
+            return ImageFont.truetype("DejaVuSans.ttf", size)
+        except OSError:
+            return ImageFont.load_default()
 
-    def make_pdf():
-        font = summary_font()
-        buffer = io.BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=(842, 595), rightMargin=32, leftMargin=32, topMargin=32, bottomMargin=32)
-        title_style = ParagraphStyle("titleKSP", fontName=font, fontSize=18, leading=26, textColor=colors.HexColor("#183153"))
-        section_style = ParagraphStyle("sectionKSP", fontName=font, fontSize=12, leading=20, textColor=colors.HexColor("#b91c1c"))
-        cell_style = ParagraphStyle("cellKSP", fontName=font, fontSize=8, leading=13, alignment=TA_LEFT)
-        note_style = ParagraphStyle("noteKSP", fontName=font, fontSize=8, leading=13, textColor=colors.HexColor("#64748b"))
-        from xml.sax.saxutils import escape
-        def para(v):
-            return Paragraph(escape(str(v)), cell_style)
-        def table(headers, rows, widths):
-            data = [[para(x) for x in headers]] + [[para(v) for v in row] for row in rows]
-            t = PdfTable(data, colWidths=widths, repeatRows=1, hAlign="LEFT")
-            t.setStyle(TableStyle([
-                ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#e8edf4")),
-                ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#f6f8fb")]),
-                ("VALIGN", (0,0), (-1,-1), "TOP"),
-                ("GRID", (0,0), (-1,-1), .35, colors.HexColor("#dbe1e9")),
-                ("LEFTPADDING", (0,0), (-1,-1), 7), ("RIGHTPADDING", (0,0), (-1,-1), 7),
-                ("TOPPADDING", (0,0), (-1,-1), 5), ("BOTTOMPADDING", (0,0), (-1,-1), 5),
-            ]))
-            return t
-        story = [Paragraph("KSP | Farm Engineering — Summary", title_style), Spacer(1,12),
-                 Paragraph("ข้อมูลโรงเรือน", section_style), table(["รายการ", "ค่า"], house_rows, [310,460]), Spacer(1,12),
-                 Paragraph("รายการอุปกรณ์รวมต่อโรงเรือน", section_style),
-                 table(["อุปกรณ์", "จำนวน", "หน่วย", "รายละเอียด"],
-                       [[r["อุปกรณ์"],r["จำนวน"],r["หน่วย"],r["รายละเอียด"]] for r in equipment], [160,65,55,490]),
-                 Spacer(1,12), Paragraph("รายละเอียด Cooling Pad / Pump / Tunnel Door แยกตามด้าน", section_style)]
-        if detail:
-            detail_cols = list(detail[0].keys())
-            # Wide schedule is split into two tables to preserve readability in PDF.
-            for cols in [detail_cols[:6], detail_cols[6:]]:
-                story.extend([table(cols, [[r.get(k, "") for k in cols] for r in detail], [770/len(cols)]*len(cols)),Spacer(1,8)])
-        story.extend([Paragraph("ข้อมูลประกอบการคำนวณ", section_style),
-                      table(["หัวข้อ", "รายละเอียด"], calc_rows, [180,590]),Spacer(1,10),
-                      Paragraph("ผลลัพธ์เป็นการประมาณเบื้องต้น โปรดตรวจสอบสเปกอุปกรณ์และแบบวิศวกรรมก่อนสั่งซื้อ", note_style)])
-        doc.build(story)
+    def make_jpg():
+        font_title = export_font(39)
+        font_head = export_font(26)
+        font_body = export_font(20)
+        font_small = export_font(17)
+        width, margin = 1754, 70  # A4 landscape-like ratio, high-resolution JPG
+        navy, red, pale, gray = "#183153", "#C62828", "#EEF2F7", "#475569"
+        sections = [
+            ("01  HOUSE DIMENSIONS", ["Parameter", "Value"], house_rows),
+            ("02  EQUIPMENT SCHEDULE", ["Equipment", "Qty", "Unit", "Specification"], export_equipment),
+        ]
+        if export_detail:
+            sections.append(("03  PAD / PUMP / AIR STEP BY SIDE", export_detail_headers, export_detail))
+        sections.append(("04  CALCULATION DETAILS", ["Parameter", "Details"], calc_rows))
+        image = Image.new("RGB", (width, 6000), "white")
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((0, 0, width, 105), fill=navy)
+        draw.text((margin, 24), "KSP  |  FARM ENGINEERING SUMMARY", font=font_title, fill="white")
+        y = 138
+
+        def wrap(value, font, max_width):
+            text = str(value) if value is not None else ""
+            # Character-based wrapping handles Thai text without spaces.
+            lines, current = [], ""
+            for ch in text:
+                candidate = current + ch
+                if draw.textlength(candidate, font=font) > max_width and current:
+                    lines.append(current)
+                    current = ch
+                else:
+                    current = candidate
+            lines.append(current)
+            return lines
+
+        for section_title, headers, rows in sections:
+            draw.rounded_rectangle((margin, y, width-margin, y+52), radius=9, fill="#FCE8E8")
+            draw.text((margin+15, y+9), section_title, font=font_head, fill=red)
+            y += 65
+            count = len(headers)
+            if count == 2:
+                ratios = [0.35, 0.65]
+            elif count == 4:
+                ratios = [0.20, 0.10, 0.09, 0.61]
+            else:
+                ratios = [1/count]*count
+            usable = width-2*margin
+            bounds = [margin]
+            for ratio in ratios:
+                bounds.append(bounds[-1]+usable*ratio)
+            row_data = [headers]+list(rows)
+            for idx, record in enumerate(row_data):
+                font = font_small if count > 5 else font_body
+                wrapped = [wrap(v, font, max(30,bounds[j+1]-bounds[j]-24)) for j,v in enumerate(record)]
+                line_h = 27 if count <= 5 else 24
+                row_h = max(39, max(len(lines) for lines in wrapped)*line_h+16)
+                draw.rectangle((margin,y,width-margin,y+row_h),fill=navy if idx==0 else ("#F3F6FA" if idx%2==0 else "#FFFFFF"))
+                for j, lines in enumerate(wrapped):
+                    x=bounds[j]+10
+                    for k,line in enumerate(lines):
+                        draw.text((x,y+7+k*line_h),line,font=font,fill="white" if idx==0 else navy)
+                draw.line((margin,y+row_h,width-margin,y+row_h),fill="#DCE3EB",width=2)
+                y += row_h
+            y += 30
+        note="Preliminary design only | Verify manufacturer specifications, airflow, heat loss and installation dimensions."
+        draw.text((margin,y),note,font=font_small,fill=gray)
+        y += 60
+        cropped=image.crop((0,0,width,y))
+        buffer=io.BytesIO()
+        cropped.save(buffer,format="JPEG",quality=93,optimize=True,subsampling=0)
         return buffer.getvalue()
 
     def make_excel():
-        wb = Workbook.create()
-        sh = wb.worksheets.add("Summary")
+        wb = Workbook()
+        sh = wb.active
+        sh.title = "Summary"
         sh.merge_cells("A1:D1")
-        sh.get_range("A1").values = [["KSP | Farm Engineering — Summary"]]
-        sh.get_range("A1:D1").format.fill = "#183153"
-        sh.get_range("A1:D1").format.font.color = "#FFFFFF"
-        sh.get_range("A1:D1").format.font.bold = True
+        sh["A1"] = "KSP | Farm Engineering — Summary"
+        sh["A1"].font = Font(name="Arial", size=18, bold=True, color="FFFFFF")
+        sh["A1"].fill = PatternFill("solid", fgColor="183153")
+        sh["A1"].alignment = Alignment(vertical="center")
+        sh.row_dimensions[1].height = 38
         row = 3
-        def section(name, headers, data):
+        def section(title, headers, data):
             nonlocal row
-            cols = len(headers)
-            sh.get_range_by_indexes(row-1,0,1,cols).merge()
-            sh.get_cell(row-1,0).values = [[name]]
-            sh.get_range_by_indexes(row-1,0,1,cols).format.fill = "#FCE8E8"
-            sh.get_range_by_indexes(row-1,0,1,cols).format.font.bold = True
-            row += 1
-            sh.get_range_by_indexes(row-1,0,1,cols).values = [headers]
-            hdr=sh.get_range_by_indexes(row-1,0,1,cols)
-            hdr.format.fill = "#E8EDF4"
-            hdr.format.font.bold = True
-            row += 1
-            if data:
-                sh.get_range_by_indexes(row-1,0,len(data),cols).values = [[str(v) if v is not None else "" for v in record] for record in data]
-                row += len(data)
-            row += 2
-        section("ข้อมูลโรงเรือน", ["รายการ","ค่า"], house_rows)
-        section("รายการอุปกรณ์รวมต่อโรงเรือน", ["อุปกรณ์","จำนวน","หน่วย","รายละเอียด"],
-                [[r["อุปกรณ์"],r["จำนวน"],r["หน่วย"],r["รายละเอียด"]] for r in equipment])
-        if detail:
-            cols=list(detail[0].keys())
-            section("รายละเอียด Cooling Pad / Pump / Tunnel Door แยกตามด้าน", cols,
-                    [[r.get(k, "") for k in cols] for r in detail])
-        section("ข้อมูลประกอบการคำนวณ", ["หัวข้อ","รายละเอียด"], calc_rows)
-        sh.get_range("A:A").format.column_width = 28
-        sh.get_range("B:B").format.column_width = 22
-        sh.get_range("C:C").format.column_width = 22
-        sh.get_range("D:D").format.column_width = 55
-        sh.get_range("E:M").format.column_width = 20
-        sh.get_range(f"A1:M{row}").format.wrap_text = True
-        import tempfile, os
-        fd, path = tempfile.mkstemp(suffix=".xlsx")
-        os.close(fd)
-        try:
-            SpreadsheetFile.export_xlsx(wb).save(path)
-            with open(path,"rb") as f: return f.read()
-        finally:
-            os.unlink(path)
+            n = len(headers)
+            sh.merge_cells(start_row=row,start_column=1,end_row=row,end_column=n)
+            c = sh.cell(row,1,title)
+            c.fill=PatternFill("solid",fgColor="FCE8E8")
+            c.font=Font(bold=True,color="B91C1C",size=12)
+            sh.row_dimensions[row].height=27
+            row+=1
+            for col,label in enumerate(headers,1):
+                c=sh.cell(row,col,str(label))
+                c.fill=PatternFill("solid",fgColor="E8EDF4")
+                c.font=Font(bold=True,color="183153")
+                c.alignment=Alignment(wrap_text=True,vertical="center")
+            sh.row_dimensions[row].height=32
+            row+=1
+            for record in data:
+                for col,value in enumerate(record,1):
+                    c=sh.cell(row,col,value if isinstance(value,(int,float)) else str(value) if value is not None else "")
+                    c.alignment=Alignment(wrap_text=True,vertical="top")
+                    if row%2==0:
+                        c.fill=PatternFill("solid",fgColor="F3F6FA")
+                sh.row_dimensions[row].height=45 if n<=4 else 55
+                row+=1
+            row+=2
+        section("01 HOUSE DIMENSIONS",["Parameter","Value"],house_rows)
+        section("02 EQUIPMENT SCHEDULE",["Equipment","Qty","Unit","Specification"], export_equipment)
+        if export_detail:
+            section("03 PAD / PUMP / AIR STEP BY SIDE", export_detail_headers, export_detail)
+        section("04 CALCULATION DETAILS",["Parameter","Details"],calc_rows)
+        for col in range(1,max(5,len(export_detail_headers)+1 if export_detail else 5)):
+            sh.column_dimensions[get_column_letter(col)].width = 24 if col!=4 else 65
+        sh.freeze_panes="A4"
+        sh.sheet_view.showGridLines=False
+        buf=io.BytesIO()
+        wb.save(buf)
+        return buf.getvalue()
 
     st.subheader("📥 ดาวน์โหลด Summary")
-    st.caption("ไฟล์ PDF และ Excel ใช้หัวข้อและตารางเดียวกับหน้า Summary ของ App")
+    st.caption("JPG และ Excel ใช้ข้อมูลเดียวกับหน้า Summary โดยจัดหน้ารายงานให้อ่านง่าย")
     export_signature = repr((width_m, height_m, house_length, air_speed_fpm, fan_cfm,
                              pad_height, pad_width, pad_face_velocity, layout, front_length,
                              heater_kw, factor, safety_margin, inlet_percent, conversion,
                              inlet_capacity, opening_ratio))
     if st.session_state.get("summary_export_signature") != export_signature:
-        st.session_state.pop("summary_pdf", None)
+        st.session_state.pop("summary_jpg", None)
         st.session_state.pop("summary_xlsx", None)
         st.session_state["summary_export_signature"] = export_signature
-    if st.button("เตรียมไฟล์ PDF และ Excel", disabled=not sum_valid):
+    if st.button("เตรียมไฟล์ JPG และ Excel", disabled=not sum_valid):
+        errors = []
         try:
-            st.session_state["summary_pdf"] = make_pdf()
-            st.session_state["summary_xlsx"] = make_excel()
-            st.success("เตรียมไฟล์เรียบร้อยแล้ว")
+            st.session_state["summary_jpg"] = make_jpg()
         except Exception as exc:
-            st.error(f"ไม่สามารถสร้างไฟล์ได้: {exc}")
-    a,b = st.columns(2)
-    with a:
-        if "summary_pdf" in st.session_state:
-            st.download_button("📄 ดาวน์โหลด PDF", st.session_state["summary_pdf"],
-                file_name="KSP_Farm_Engineering_Summary.pdf", mime="application/pdf")
-    with b:
+            errors.append(f"JPG: {exc}")
+        try:
+            st.session_state["summary_xlsx"] = make_excel()
+        except Exception as exc:
+            errors.append(f"Excel: {exc}")
+        if errors:
+            for error in errors:
+                st.error(f"ไม่สามารถสร้างไฟล์ {error}")
+        else:
+            st.success("เตรียมไฟล์ JPG และ Excel เรียบร้อยแล้ว")
+    col_jpg, col_excel = st.columns(2)
+    with col_jpg:
+        if "summary_jpg" in st.session_state:
+            st.download_button("🖼️ ดาวน์โหลด JPG",st.session_state["summary_jpg"],
+                file_name="KSP_Farm_Engineering_Summary.jpg",mime="image/jpeg")
+    with col_excel:
         if "summary_xlsx" in st.session_state:
-            st.download_button("📊 ดาวน์โหลด Excel", st.session_state["summary_xlsx"],
+            st.download_button("📊 ดาวน์โหลด Excel",st.session_state["summary_xlsx"],
                 file_name="KSP_Farm_Engineering_Summary.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     st.warning('Summary เป็นรายการประมาณการเบื้องต้น ไม่ใช่ BOM เพื่อสั่งซื้อหรือแบบติดตั้งที่ผ่านการรับรอง ต้องตรวจสอบสเปกจริงและการปัดจำนวนแยกแต่ละด้านก่อนใช้งาน')
