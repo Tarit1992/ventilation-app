@@ -242,8 +242,8 @@ with tab_inlet:
     )
     conversion = st.selectbox(
         "ตัวคูณแปลง CFM เป็น m³/h",
-        [1.66, 1.699],
-        format_func=lambda v: "1.66 (ตามสูตร KSP ที่ระบุ)" if v == 1.66 else "1.699 (ค่าการแปลงหน่วยมาตรฐานโดยประมาณ)",
+        [1.699],
+        format_func=lambda v: "1.699 (ค่าการแปลงหน่วยมาตรฐานโดยประมาณ)",
         key="inlet_conversion",
     )
     inlet_capacity = st.number_input(
