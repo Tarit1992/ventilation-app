@@ -1,4 +1,5 @@
 import math
+import io
 import streamlit as st
 
 def calculate_pad_layout(total_fan_cfm, pad_height, pad_width, layout, requested_front_m, face_velocity_fpm):
@@ -71,7 +72,12 @@ with tab_vent:
     layout = st.radio("รูปแบบติดตั้ง Pad", ["2 ด้าน (ซ้าย-ขวา)", "3 ด้าน (ซ้าย-ขวา-หน้า)"])
     front_length = 0.0
     if layout == "3 ด้าน (ซ้าย-ขวา-หน้า)":
-        front_length = st.number_input("ความยาว Pad ด้านหน้า (m)", min_value=0.0, value=10.0)
+        auto_front = st.checkbox("ใช้ความกว้างโรงเรือนเป็นความยาว Pad ด้านหน้าอัตโนมัติ", value=True)
+        if auto_front:
+            front_length = width_m
+            st.info(f"ความยาว Pad ด้านหน้าอ้างอิงความกว้างโรงเรือน = {front_length:,.2f} m (จำนวนก้อนปัดขึ้นตามขนาดจริง)")
+        else:
+            front_length = st.number_input("ความยาว Pad ด้านหน้า (m)", min_value=0.0, value=float(width_m))
 
     # Single source of truth for Pad, Pump, Door and Summary.
     shared_required_cfm = (width_m * 3.28084) * (height_m * 3.28084) * air_speed_fpm
@@ -242,8 +248,8 @@ with tab_inlet:
     )
     conversion = st.selectbox(
         "ตัวคูณแปลง CFM เป็น m³/h",
-        [1.699],
-        format_func=lambda v: "1.699 (ค่าการแปลงหน่วยมาตรฐานโดยประมาณ)",
+        [1.66, 1.699],
+        format_func=lambda v: "1.66 (ตามสูตร KSP ที่ระบุ)" if v == 1.66 else "1.699 (ค่าการแปลงหน่วยมาตรฐานโดยประมาณ)",
         key="inlet_conversion",
     )
     inlet_capacity = st.number_input(
@@ -424,7 +430,150 @@ with tab_summary:
                   f'Heating factor: {factor:.3f} kW/m3; margin: {safety_margin:g}%',
                   f'Air inlet fraction: {inlet_percent:g}%; conversion: {conversion:g}; inlet capacity: {inlet_capacity:g} m3/h',
                   'Preliminary calculations only. Verify actual product curves, pressure losses, ventilation, and heat loss.'])
-    st.download_button('📥 ดาวน์โหลด Summary (.txt)', '\n'.join(lines),
-                       file_name='KSP_Farm_Engineering_Summary.txt', mime='text/plain',
-                       disabled=not sum_valid)
+    # Exports reproduce the same four sections and tables shown on the Summary tab.
+    house_rows = [
+        ("ความกว้างโรงเรือน (m)", f"{width_m:,.2f}"),
+        ("ความยาวโรงเรือน (m)", f"{house_length:,.2f}"),
+        ("ความสูงโรงเรือน (m)", f"{height_m:,.2f}"),
+        ("ปริมาตร (m³)", f"{sum_volume:,.2f}"),
+        ("Air Speed (ft/min)", f"{air_speed_fpm:,.0f}"),
+        ("Design Static Pressure (in.w.g.)", f"{design_pressure:.2f}"),
+    ]
+    calc_rows = [
+        ("Ventilation Required", f"{sum_required_cfm:,.0f} CFM / {sum_required_m3h:,.0f} m³/h"),
+        ("Cooling Pad", f"{sum_fan_cfm:,.0f} CFM / {pad_face_velocity:g} / 10.764 = {sum_pad_area:,.2f} m²; {sum_pad_pieces} ก้อน; ยาว {sum_pad_length:,.2f} m"),
+        ("Heater", f"{climate}; {factor:.3f} kW/m³; {required_kw:,.1f} kW; margin {safety_margin:g}%"),
+        ("Air Inlet", f"{sum_fan_cfm:,.0f} CFM × {inlet_percent:g}% × {conversion:g} = {sum_inlet_m3h:,.0f} m³/h"),
+        ("Air Step / Tunnel Door", f"{sum_step['layers']} Layers; สูงภายนอก {sum_opening_height:.3f} m; สูงเป้าหมาย {pad_height*opening_ratio/100:.3f} m" if sum_step else "ไม่มีรุ่นที่เหมาะสม"),
+    ]
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Table as PdfTable, TableStyle, Spacer, KeepTogether
+    from reportlab.lib import colors
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.lib.enums import TA_LEFT
+    from artifact_tool import Workbook, SpreadsheetFile
+
+    @st.cache_resource
+    def summary_font():
+        font_path = "/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf"
+        pdfmetrics.registerFont(TTFont("KSPThai", font_path))
+        return "KSPThai"
+
+    def make_pdf():
+        font = summary_font()
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=(842, 595), rightMargin=32, leftMargin=32, topMargin=32, bottomMargin=32)
+        title_style = ParagraphStyle("titleKSP", fontName=font, fontSize=18, leading=26, textColor=colors.HexColor("#183153"))
+        section_style = ParagraphStyle("sectionKSP", fontName=font, fontSize=12, leading=20, textColor=colors.HexColor("#b91c1c"))
+        cell_style = ParagraphStyle("cellKSP", fontName=font, fontSize=8, leading=13, alignment=TA_LEFT)
+        note_style = ParagraphStyle("noteKSP", fontName=font, fontSize=8, leading=13, textColor=colors.HexColor("#64748b"))
+        from xml.sax.saxutils import escape
+        def para(v):
+            return Paragraph(escape(str(v)), cell_style)
+        def table(headers, rows, widths):
+            data = [[para(x) for x in headers]] + [[para(v) for v in row] for row in rows]
+            t = PdfTable(data, colWidths=widths, repeatRows=1, hAlign="LEFT")
+            t.setStyle(TableStyle([
+                ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#e8edf4")),
+                ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#f6f8fb")]),
+                ("VALIGN", (0,0), (-1,-1), "TOP"),
+                ("GRID", (0,0), (-1,-1), .35, colors.HexColor("#dbe1e9")),
+                ("LEFTPADDING", (0,0), (-1,-1), 7), ("RIGHTPADDING", (0,0), (-1,-1), 7),
+                ("TOPPADDING", (0,0), (-1,-1), 5), ("BOTTOMPADDING", (0,0), (-1,-1), 5),
+            ]))
+            return t
+        story = [Paragraph("KSP | Farm Engineering — Summary", title_style), Spacer(1,12),
+                 Paragraph("ข้อมูลโรงเรือน", section_style), table(["รายการ", "ค่า"], house_rows, [310,460]), Spacer(1,12),
+                 Paragraph("รายการอุปกรณ์รวมต่อโรงเรือน", section_style),
+                 table(["อุปกรณ์", "จำนวน", "หน่วย", "รายละเอียด"],
+                       [[r["อุปกรณ์"],r["จำนวน"],r["หน่วย"],r["รายละเอียด"]] for r in equipment], [160,65,55,490]),
+                 Spacer(1,12), Paragraph("รายละเอียด Cooling Pad / Pump / Tunnel Door แยกตามด้าน", section_style)]
+        if detail:
+            detail_cols = list(detail[0].keys())
+            # Wide schedule is split into two tables to preserve readability in PDF.
+            for cols in [detail_cols[:6], detail_cols[6:]]:
+                story.extend([table(cols, [[r.get(k, "") for k in cols] for r in detail], [770/len(cols)]*len(cols)),Spacer(1,8)])
+        story.extend([Paragraph("ข้อมูลประกอบการคำนวณ", section_style),
+                      table(["หัวข้อ", "รายละเอียด"], calc_rows, [180,590]),Spacer(1,10),
+                      Paragraph("ผลลัพธ์เป็นการประมาณเบื้องต้น โปรดตรวจสอบสเปกอุปกรณ์และแบบวิศวกรรมก่อนสั่งซื้อ", note_style)])
+        doc.build(story)
+        return buffer.getvalue()
+
+    def make_excel():
+        wb = Workbook.create()
+        sh = wb.worksheets.add("Summary")
+        sh.merge_cells("A1:D1")
+        sh.get_range("A1").values = [["KSP | Farm Engineering — Summary"]]
+        sh.get_range("A1:D1").format.fill = "#183153"
+        sh.get_range("A1:D1").format.font.color = "#FFFFFF"
+        sh.get_range("A1:D1").format.font.bold = True
+        row = 3
+        def section(name, headers, data):
+            nonlocal row
+            cols = len(headers)
+            sh.get_range_by_indexes(row-1,0,1,cols).merge()
+            sh.get_cell(row-1,0).values = [[name]]
+            sh.get_range_by_indexes(row-1,0,1,cols).format.fill = "#FCE8E8"
+            sh.get_range_by_indexes(row-1,0,1,cols).format.font.bold = True
+            row += 1
+            sh.get_range_by_indexes(row-1,0,1,cols).values = [headers]
+            hdr=sh.get_range_by_indexes(row-1,0,1,cols)
+            hdr.format.fill = "#E8EDF4"
+            hdr.format.font.bold = True
+            row += 1
+            if data:
+                sh.get_range_by_indexes(row-1,0,len(data),cols).values = [[str(v) if v is not None else "" for v in record] for record in data]
+                row += len(data)
+            row += 2
+        section("ข้อมูลโรงเรือน", ["รายการ","ค่า"], house_rows)
+        section("รายการอุปกรณ์รวมต่อโรงเรือน", ["อุปกรณ์","จำนวน","หน่วย","รายละเอียด"],
+                [[r["อุปกรณ์"],r["จำนวน"],r["หน่วย"],r["รายละเอียด"]] for r in equipment])
+        if detail:
+            cols=list(detail[0].keys())
+            section("รายละเอียด Cooling Pad / Pump / Tunnel Door แยกตามด้าน", cols,
+                    [[r.get(k, "") for k in cols] for r in detail])
+        section("ข้อมูลประกอบการคำนวณ", ["หัวข้อ","รายละเอียด"], calc_rows)
+        sh.get_range("A:A").format.column_width = 28
+        sh.get_range("B:B").format.column_width = 22
+        sh.get_range("C:C").format.column_width = 22
+        sh.get_range("D:D").format.column_width = 55
+        sh.get_range("E:M").format.column_width = 20
+        sh.get_range(f"A1:M{row}").format.wrap_text = True
+        import tempfile, os
+        fd, path = tempfile.mkstemp(suffix=".xlsx")
+        os.close(fd)
+        try:
+            SpreadsheetFile.export_xlsx(wb).save(path)
+            with open(path,"rb") as f: return f.read()
+        finally:
+            os.unlink(path)
+
+    st.subheader("📥 ดาวน์โหลด Summary")
+    st.caption("ไฟล์ PDF และ Excel ใช้หัวข้อและตารางเดียวกับหน้า Summary ของ App")
+    export_signature = repr((width_m, height_m, house_length, air_speed_fpm, fan_cfm,
+                             pad_height, pad_width, pad_face_velocity, layout, front_length,
+                             heater_kw, factor, safety_margin, inlet_percent, conversion,
+                             inlet_capacity, opening_ratio))
+    if st.session_state.get("summary_export_signature") != export_signature:
+        st.session_state.pop("summary_pdf", None)
+        st.session_state.pop("summary_xlsx", None)
+        st.session_state["summary_export_signature"] = export_signature
+    if st.button("เตรียมไฟล์ PDF และ Excel", disabled=not sum_valid):
+        try:
+            st.session_state["summary_pdf"] = make_pdf()
+            st.session_state["summary_xlsx"] = make_excel()
+            st.success("เตรียมไฟล์เรียบร้อยแล้ว")
+        except Exception as exc:
+            st.error(f"ไม่สามารถสร้างไฟล์ได้: {exc}")
+    a,b = st.columns(2)
+    with a:
+        if "summary_pdf" in st.session_state:
+            st.download_button("📄 ดาวน์โหลด PDF", st.session_state["summary_pdf"],
+                file_name="KSP_Farm_Engineering_Summary.pdf", mime="application/pdf")
+    with b:
+        if "summary_xlsx" in st.session_state:
+            st.download_button("📊 ดาวน์โหลด Excel", st.session_state["summary_xlsx"],
+                file_name="KSP_Farm_Engineering_Summary.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     st.warning('Summary เป็นรายการประมาณการเบื้องต้น ไม่ใช่ BOM เพื่อสั่งซื้อหรือแบบติดตั้งที่ผ่านการรับรอง ต้องตรวจสอบสเปกจริงและการปัดจำนวนแยกแต่ละด้านก่อนใช้งาน')
