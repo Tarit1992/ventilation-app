@@ -3,9 +3,9 @@ import streamlit as st
 
 st.set_page_config(page_title="KSP Farm Engineering Calculator", page_icon="🐔", layout="centered")
 st.title("🐷🐔 KSP Farm Engineering Calculator")
-st.caption("Ventilation • Cooling Pad • Pump • L.B. White • Air Inlet | Preliminary sizing")
+st.caption("Ventilation • Cooling Pad • Pump • L.B. White • Air Inlet • Air Step / Tunnel Door | Preliminary sizing")
 
-tab_vent, tab_heat, tab_inlet = st.tabs(["🌬️ Ventilation / Pad / Pump", "🔥 L.B. White Heater", "🪟 Air Inlet"])
+tab_vent, tab_heat, tab_inlet, tab_summary = st.tabs(["🌬️ Ventilation / Pad / Pump", "🔥 L.B. White Heater", "🪟 Air Inlet / Air Step / Tunnel Door", "📋 Summary"])
 
 with tab_vent:
     st.header("1️⃣ ข้อมูลโรงเรือน")
@@ -27,6 +27,19 @@ with tab_vent:
     front_length = 0.0
     if layout == "3 ด้าน (ซ้าย-ขวา-หน้า)":
         front_length = st.number_input("ความยาว Pad ด้านหน้า (m)", min_value=0.0, value=10.0)
+
+    # Shared Cooling Pad dimensions: available to the Air Inlet / Door tab even before clicking Calculate.
+    shared_required_cfm = (width_m * 3.28084) * (height_m * 3.28084) * air_speed_fpm
+    shared_pad_area = shared_required_cfm * 1.699 / 10000.0
+    shared_pad_total_length = shared_pad_area / pad_height
+    if layout == "3 ด้าน (ซ้าย-ขวา-หน้า)":
+        shared_front = front_length
+        shared_side = max(0.0, (shared_pad_total_length - shared_front) / 2)
+        shared_layout_valid = shared_front <= shared_pad_total_length
+    else:
+        shared_front = 0.0
+        shared_side = shared_pad_total_length / 2
+        shared_layout_valid = True
 
     if st.button("คำนวณทั้งหมด", type="primary", key="calculate_vent"):
         width_ft = width_m * 3.28084
@@ -114,14 +127,9 @@ with tab_vent:
 with tab_heat:
     st.header("🔥 L.B. White Heater Calculator")
     st.caption("คำนวณกำลังความร้อนเบื้องต้นด้วย Heating Factor จากสไลด์ KSP")
-    st.subheader("1️⃣ ขนาดโรงเรือน")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        h_width = st.number_input("กว้าง (m)", min_value=0.01, value=10.0, key="h_width")
-    with col2:
-        h_length = st.number_input("ยาว (m)", min_value=0.01, value=60.0, key="h_length")
-    with col3:
-        h_height = st.number_input("สูงเฉลี่ย (m)", min_value=0.01, value=2.4, key="h_height")
+    st.subheader("1️⃣ ขนาดโรงเรือน (เชื่อมโยงจาก Ventilation)")
+    h_width, h_length, h_height = width_m, house_length, height_m
+    st.info(f"กว้าง {h_width:g} m × ยาว {h_length:g} m × สูง {h_height:g} m — แก้ไขได้ที่แท็บ Ventilation")
     volume = h_width * h_length * h_height
     st.metric("ปริมาตรโรงเรือน", f"{volume:,.1f} m³")
 
@@ -203,7 +211,7 @@ with tab_inlet:
     )
     conversion = st.selectbox(
         "ตัวคูณแปลง CFM เป็น m³/h",
-        [1.699, 1.699],
+        [1.66, 1.699],
         format_func=lambda v: "1.66 (ตามสูตร KSP ที่ระบุ)" if v == 1.66 else "1.699 (ค่าการแปลงหน่วยมาตรฐานโดยประมาณ)",
         key="inlet_conversion",
     )
@@ -228,6 +236,36 @@ with tab_inlet:
     st.write(f"แปลงเป็น m³/h = {inlet_cfm:,.0f} × {conversion:g} = **{inlet_m3h:,.0f} m³/h**")
     st.write(f"จำนวนบาน = ปัดขึ้น({inlet_m3h:,.0f} ÷ {inlet_capacity:,.0f}) = **{inlet_count:,} บาน**")
 
+    st.divider()
+    st.subheader("4️⃣ Air Step / Tunnel Door (เชื่อมโยงกับ Cooling Pad)")
+    st.caption("ความสูงช่องเปิด = ความสูง Cooling Pad × 85% | ความกว้างช่องเปิดแต่ละด้าน = ความยาว Pad ที่ติดตั้งด้านนั้น")
+    opening_ratio = st.number_input("สัดส่วนความสูงช่องเปิดเทียบกับ Pad (%)", min_value=1.0, max_value=100.0,
+                                    value=85.0, step=1.0, key="opening_ratio")
+    opening_height = pad_height * opening_ratio / 100.0
+    st.write(f"ความสูง Cooling Pad: **{pad_height:.2f} m** → ความสูง Air Step / Tunnel Door: **{opening_height:.3f} m**")
+    st.write(f"รูปแบบติดตั้ง Pad: **{layout}**")
+    if not shared_layout_valid:
+        st.error("ความยาว Pad ด้านหน้ามากกว่าความยาว Pad รวม กรุณากลับไปปรับที่แท็บ Ventilation")
+        opening_sides = []
+    elif layout == "3 ด้าน (ซ้าย-ขวา-หน้า)":
+        opening_sides = [("ด้านหน้า", shared_front), ("ด้านซ้าย", shared_side), ("ด้านขวา", shared_side)]
+    else:
+        opening_sides = [("ด้านซ้าย", shared_side), ("ด้านขวา", shared_side)]
+        st.info("ปัจจุบัน Cooling Pad เลือกติดตั้ง 2 ด้าน จึงแสดงช่องเปิด 2 ด้าน หากต้องการคำนวณ 3 ด้าน ให้เลือก 3 ด้านในแท็บ Ventilation")
+    opening_report_rows = []
+    for name, length in opening_sides:
+        area = length * opening_height
+        st.write(f"**{name}:** กว้าง {length:.2f} m × สูง {opening_height:.3f} m = **{area:.2f} m²**")
+        opening_report_rows.append(f"{name}: width {length:.2f} m x height {opening_height:.3f} m = {area:.2f} m2")
+    if opening_sides:
+        total_opening_area = sum(length * opening_height for _, length in opening_sides)
+        st.metric("พื้นที่ช่องเปิดรวม", f"{total_opening_area:,.2f} m²")
+        if shared_side > house_length:
+            st.warning("ความยาวช่องเปิดด้านข้างเกินความยาวโรงเรือน")
+        if shared_front > width_m:
+            st.warning("ความยาวช่องเปิดด้านหน้าเกินความกว้างโรงเรือน")
+    st.warning("Air Step / Tunnel Door: ค่านี้เป็นขนาดช่องเปิดตามสัดส่วน 85% ที่กำหนด ไม่ใช่การยืนยันความเร็วลม/Pressure Drop ต้องตรวจสอบ free area และความต้านทานของช่องเปิดจริง")
+
     inlet_report = "\n".join([
         "KSP - Air Inlet Calculation",
         f"House: {width_m:g} x {house_length:g} x {height_m:g} m",
@@ -241,6 +279,12 @@ with tab_inlet:
         f"Inlet airflow: {inlet_m3h:,.2f} m3/h",
         f"Inlet capacity per unit: {inlet_capacity:,.2f} m3/h",
         f"Required air inlets: {inlet_count} units",
+        "Air Step / Tunnel Door:",
+        f"Cooling Pad height: {pad_height:.2f} m",
+        f"Opening height ratio: {opening_ratio:.1f}%",
+        f"Opening height: {opening_height:.3f} m",
+        f"Pad layout: {layout}",
+        *opening_report_rows,
         "Note: preliminary sizing. Verify capacity at operating static pressure and inlet distribution.",
     ])
     st.download_button("📥 ดาวน์โหลดรายงาน Air Inlet (.txt)", data=inlet_report,
@@ -250,3 +294,94 @@ with tab_inlet:
         "ต้องตรวจสอบความสามารถรับลมของ Air Inlet ที่แรงดันใช้งานจริง "
         "รวมถึงการกระจายตำแหน่งช่องลมและการควบคุม Minimum Ventilation ก่อนติดตั้ง"
     )
+
+
+# Summary recomputes directly from current widget values, without requiring a button click.
+with tab_summary:
+    st.header("📋 Summary — Equipment & Design Schedule")
+    st.caption("สรุปผลทุกระบบจากค่าที่กรอกล่าสุดโดยอัตโนมัติ (ต่อ 1 โรงเรือน)")
+
+    sum_volume = width_m * house_length * height_m
+    sum_area_ft2 = (width_m * 3.28084) * (height_m * 3.28084)
+    sum_required_cfm = sum_area_ft2 * air_speed_fpm
+    sum_required_m3h = sum_required_cfm * 1.699
+    sum_fans = math.ceil(sum_required_cfm / fan_cfm)
+    sum_fan_cfm = sum_fans * fan_cfm
+    sum_pad_area = sum_required_m3h / 10000.0
+    sum_pad_length = sum_pad_area / pad_height
+    sum_pad_pieces = math.ceil(sum_pad_area / (pad_height * pad_width))
+    sum_pad_sides = ([('ด้านหน้า', front_length), ('ด้านซ้าย', (sum_pad_length-front_length)/2),
+                      ('ด้านขวา', (sum_pad_length-front_length)/2)]
+                     if layout == '3 ด้าน (ซ้าย-ขวา-หน้า)' else
+                     [('ด้านซ้าย', sum_pad_length/2), ('ด้านขวา', sum_pad_length/2)])
+    sum_valid = all(length >= 0 for _, length in sum_pad_sides)
+    sum_pump_flow = [(name, length * pad_height * (7 / (1.8 * 0.6)) * 1.2)
+                     for name, length in sum_pad_sides] if sum_valid else []
+    sum_opening_height = pad_height * opening_ratio / 100
+    sum_opening_area = sum(sum_opening_height * length for _, length in sum_pad_sides) if sum_valid else 0
+    sum_inlet_cfm = sum_fan_cfm * inlet_percent / 100
+    sum_inlet_m3h = sum_inlet_cfm * conversion
+    sum_inlets = math.ceil(sum_inlet_m3h / inlet_capacity)
+
+    st.subheader("🏠 ข้อมูลโรงเรือน")
+    st.write(f"กว้าง **{width_m:,.2f} m** × ยาว **{house_length:,.2f} m** × สูง **{height_m:,.2f} m** | ปริมาตร **{sum_volume:,.2f} m³**")
+    st.write(f"Air Speed: **{air_speed_fpm:,.0f} ft/min** | Design Static Pressure: **{design_pressure:.2f} in.w.g.**")
+
+    st.subheader("📦 รายการอุปกรณ์รวมต่อโรงเรือน")
+    equipment = [
+        {"อุปกรณ์": "Ventilation Fan", "จำนวน": sum_fans, "หน่วย": "ตัว", "รายละเอียด": f"{fan_cfm:,.0f} CFM/ตัว; รวม {sum_fan_cfm:,.0f} CFM"},
+        {"อุปกรณ์": "Cooling Pad", "จำนวน": sum_pad_pieces if sum_valid else None, "หน่วย": "ก้อน", "รายละเอียด": f"{pad_height:g} × {pad_width:g} m; พื้นที่รวม {sum_pad_area:,.2f} m²"},
+        {"อุปกรณ์": "Water Pump (ตามสูตรเดิม)", "จำนวน": len(sum_pump_flow) if sum_valid else None, "หน่วย": "ตัว", "รายละเอียด": f"อัตราการไหลรวม {sum(flow for _, flow in sum_pump_flow):,.1f} L/min" if sum_valid else "Layout ไม่ถูกต้อง"},
+        {"อุปกรณ์": "L.B. White Heater", "จำนวน": heater_count, "หน่วย": "เครื่อง", "รายละเอียด": f"{heater_kw:g} kW/เครื่อง; กำลังรวม {installed_kw:,.1f} kW"},
+        {"อุปกรณ์": "Air Inlet", "จำนวน": sum_inlets, "หน่วย": "บาน", "รายละเอียด": f"{inlet_capacity:,.0f} m³/h/บาน; ใช้ลม {inlet_percent:g}%"},
+        {"อุปกรณ์": "Air Step / Tunnel Door", "จำนวน": len(sum_pad_sides) if sum_valid else None, "หน่วย": "ด้าน", "รายละเอียด": f"สูง {sum_opening_height:.3f} m; พื้นที่ช่องเปิดรวม {sum_opening_area:,.2f} m²" if sum_valid else "Layout ไม่ถูกต้อง"},
+    ]
+    st.dataframe(equipment, use_container_width=True, hide_index=True)
+
+    st.subheader("📐 รายละเอียด Cooling Pad / Pump / Tunnel Door แยกตามด้าน")
+    if not sum_valid:
+        st.error("ความยาว Pad ด้านหน้ามากกว่าความยาว Pad รวม กรุณาปรับข้อมูลในแท็บ Ventilation ก่อนใช้ Summary")
+    else:
+        detail = []
+        for (name, length), (_, flow) in zip(sum_pad_sides, sum_pump_flow):
+            detail.append({
+                "ตำแหน่ง": name,
+                "Pad ยาว (m)": round(length, 2),
+                "Pad สูง (m)": pad_height,
+                "Pump (L/min)": round(flow, 1),
+                "ช่องเปิดกว้าง (m)": round(length, 2),
+                "ช่องเปิดสูง (m)": round(sum_opening_height, 3),
+                "ช่องเปิด (m²)": round(length * sum_opening_height, 2),
+            })
+        st.dataframe(detail, use_container_width=True, hide_index=True)
+        st.caption("จำนวน Pad เป็นการปัดขึ้นจากพื้นที่รวม ไม่ใช่จำนวนก้อนที่ปัดแยกแต่ละด้าน; จำนวน Pump สมมติ 1 ตัว/ด้าน")
+
+    st.subheader("🔎 ข้อมูลประกอบการคำนวณ")
+    st.write(f"Ventilation Required: **{sum_required_cfm:,.0f} CFM** / **{sum_required_m3h:,.0f} m³/h**")
+    st.write(f"Cooling Pad: **{sum_pad_area:,.2f} m²** / ความยาวรวม **{sum_pad_length:,.2f} m** / Layout **{layout}**")
+    st.write(f"Heater: **{climate}**, Factor **{factor:.3f} kW/m³**, Required **{required_kw:,.1f} kW**, Safety Margin **{safety_margin:g}%**")
+    st.write(f"Air Inlet: **{sum_fan_cfm:,.0f} CFM × {inlet_percent:g}% × {conversion:g} = {sum_inlet_m3h:,.0f} m³/h**")
+    st.write(f"Air Step / Tunnel Door: Pad สูง **{pad_height:g} m × {opening_ratio:g}% = {sum_opening_height:.3f} m**")
+
+    lines = [
+        'KSP FARM ENGINEERING CALCULATOR - SUMMARY',
+        f'House (W x L x H): {width_m:g} x {house_length:g} x {height_m:g} m',
+        f'House volume: {sum_volume:,.2f} m3',
+        f'Air speed: {air_speed_fpm:g} ft/min | Design pressure: {design_pressure:g} in.w.g.',
+        f'Airflow required: {sum_required_cfm:,.0f} CFM',
+        '', 'EQUIPMENT SCHEDULE',
+    ]
+    for item in equipment:
+        lines.append(f"{item['อุปกรณ์']}: {item['จำนวน']} {item['หน่วย']} | {item['รายละเอียด']}")
+    lines.extend(['', 'PAD / PUMP / OPENING BY SIDE'])
+    if sum_valid:
+        for row in detail:
+            lines.append(f"{row['ตำแหน่ง']}: Pad {row['Pad ยาว (m)']} x {row['Pad สูง (m)']} m | Pump {row['Pump (L/min)']} L/min | Opening {row['ช่องเปิดกว้าง (m)']} x {row['ช่องเปิดสูง (m)']} m")
+    lines.extend(['', 'ASSUMPTIONS',
+                  f'Heating factor: {factor:.3f} kW/m3; margin: {safety_margin:g}%',
+                  f'Air inlet fraction: {inlet_percent:g}%; conversion: {conversion:g}; inlet capacity: {inlet_capacity:g} m3/h',
+                  'Preliminary calculations only. Verify actual product curves, pressure losses, ventilation, and heat loss.'])
+    st.download_button('📥 ดาวน์โหลด Summary (.txt)', '\n'.join(lines),
+                       file_name='KSP_Farm_Engineering_Summary.txt', mime='text/plain',
+                       disabled=not sum_valid)
+    st.warning('Summary เป็นรายการประมาณการเบื้องต้น ไม่ใช่ BOM เพื่อสั่งซื้อหรือแบบติดตั้งที่ผ่านการรับรอง ต้องตรวจสอบสเปกจริงและการปัดจำนวนแยกแต่ละด้านก่อนใช้งาน')
