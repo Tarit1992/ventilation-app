@@ -452,7 +452,9 @@ with tab_summary:
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
     from reportlab.lib.enums import TA_LEFT
-    from artifact_tool import Workbook, SpreadsheetFile
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from io import BytesIO
 
     @st.cache_resource
     def summary_font():
